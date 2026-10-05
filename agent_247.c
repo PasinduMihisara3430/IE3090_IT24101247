@@ -8,20 +8,60 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#define AGENT_PORT 9410          /* 7000 + 2410 */
-#define BACKLOG    10
+#define AGENT_PORT   9410          /* 7000 + 2410 */
+#define BACKLOG      10
+#define LINE_MAX_LEN 1024
+
+typedef struct {
+    int    fd;
+    char   buf[4096];   /* receive buffer */
+    size_t len;         /* bytes currently in buf */
+} conn_t;
+
+/* Reads one line (without '\n') into out. Returns length, or -1 on disconnect/error. */
+static int read_line(conn_t *c, char *out, size_t out_size)
+{
+    while (1) {
+        char *nl = memchr(c->buf, '\n', c->len);
+        if (nl) {
+            size_t line_len = nl - c->buf;
+            size_t copy = line_len < out_size - 1 ? line_len : out_size - 1;
+            memcpy(out, c->buf, copy);
+            out[copy] = '\0';
+            if (copy > 0 && out[copy - 1] == '\r') out[copy - 1] = '\0';
+
+            size_t consumed = line_len + 1;
+            memmove(c->buf, c->buf + consumed, c->len - consumed);
+            c->len -= consumed;
+            return (int)copy;
+        }
+
+        if (c->len == sizeof(c->buf)) {   /* line too long */
+            c->len = 0;
+            return -1;
+        }
+
+        ssize_t n = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len, 0);
+        if (n <= 0) return -1;
+        c->len += n;
+    }
+}
 
 static void *client_thread(void *arg)
 {
-    int fd = *(int *)arg;
+    conn_t c;
+    c.fd  = *(int *)arg;
+    c.len = 0;
     free(arg);
 
-    char buf[1024];
-    ssize_t n;
-    while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
-        send(fd, buf, n, 0);          /* echo for now */
+    char line[LINE_MAX_LEN];
+    while (read_line(&c, line, sizeof(line)) >= 0) {
+        printf("Got line: [%s]\n", line);
+        char reply[LINE_MAX_LEN + 16];
+        snprintf(reply, sizeof(reply), "ECHO %s\n", line);
+        send(c.fd, reply, strlen(reply), 0);
     }
-    close(fd);
+    close(c.fd);
     return NULL;
 }
 
