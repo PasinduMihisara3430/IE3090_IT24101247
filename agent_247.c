@@ -53,6 +53,32 @@ static void get_sysinfo(double *cpu, long *mem_used_mb, long *uptime)
     }
 }
 
+
+/* Fills out with "pid:name,pid:name,..." from ps. Returns 0 on success. */
+static int get_proclist(char *out, size_t out_size)
+{
+        FILE *p = popen("ps -eo pid=,ppid=,comm= | awk '$2!=2 && $1!=2 {print $1, $3}'", "r");
+    if (!p) return -1;
+
+    size_t used = 0;
+    out[0] = '\0';
+    char line[256];
+    int first = 1;
+    while (fgets(line, sizeof(line), p)) {
+        int pid; char name[128];
+        if (sscanf(line, "%d %127s", &pid, name) != 2) continue;
+        char item[160];
+        int n = snprintf(item, sizeof(item), "%s%d:%s", first ? "" : ",", pid, name);
+        if (used + n + 1 >= out_size) break;   /* output full: stop */
+        memcpy(out + used, item, n);
+        used += n;
+        out[used] = '\0';
+        first = 0;
+    }
+    pclose(p);
+    return 0;
+}
+
 /* Sends one response line, always ending with " SID:<sid>\n". */
 static void send_response(conn_t *c, const char *fmt, ...)
 {
@@ -122,6 +148,15 @@ static int handle_command(conn_t *c, char *line)
         double cpu; long mem, up;
         get_sysinfo(&cpu, &mem, &up);
         send_response(c, "OK SYSINFO %.2f %ld %ld", cpu, mem, up);
+        return 1;
+    }
+
+    if (strcmp(cmd, "LISTPROC") == 0) {
+        char procs[LINE_MAX_LEN - 64];
+        if (get_proclist(procs, sizeof(procs)) == 0)
+            send_response(c, "OK PROCS %s", procs);
+        else
+            send_response(c, "ERR 007 LISTPROC_FAILED");
         return 1;
     }
 
