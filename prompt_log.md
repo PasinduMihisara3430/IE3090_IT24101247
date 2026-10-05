@@ -9,3 +9,5 @@
 | 5 | 5 Oct 2026 | Claude | Asked for line framing (read_line) with per-connection buffer | Tested with nc (multi-line + partial line); understood memchr/memmove logic |
 | 5 | 5 Oct 2026 | Claude | Asked for line framing (read_line) with per-connection buffer | Tested with nc (multi-line + partial line); understood memchr/memmove logic |
 | 6 | 5 Oct 2026 | Claude | Asked how to test 5+ simultaneous clients | Used nc loop + ss to prove 6 ESTAB connections |
+| 7 | 5 Oct 2026 | Claude | Asked for AUTH + SID-tagged responses | Tested with nc, checked every reply ends with SID:7421 |
+| 8 | 5 Oct 2026 | Claude | Asked for SYSINFO, LISTPROC, EXEC | LISTPROC filter was wrong (empty output), fixed with awk; tested injection attempts on EXEC |
