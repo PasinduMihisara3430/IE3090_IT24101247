@@ -79,6 +79,41 @@ static int get_proclist(char *out, size_t out_size)
     return 0;
 }
 
+
+/* Whitelisted EXEC: maps an allowed name to a fixed shell command.
+ * Returns NULL if the name is not in the whitelist. */
+static const char *exec_lookup(const char *name)
+{
+    if (strcmp(name, "DATE")     == 0) return "date";
+    if (strcmp(name, "UPTIME")   == 0) return "uptime -p";
+    if (strcmp(name, "DISKFREE") == 0) return "df -h /";
+    if (strcmp(name, "HOSTNAME") == 0) return "hostname";
+    if (strcmp(name, "WHOAMI")   == 0) return "whoami";
+    return NULL;
+}
+
+/* Runs a fixed command and squeezes its output into one line. */
+static int run_fixed(const char *cmd, char *out, size_t out_size)
+{
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+
+    size_t used = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), p)) {
+        for (char *q = line; *q; q++)
+            if (*q == '\n' || *q == '\r') *q = ' ';
+        size_t n = strlen(line);
+        if (used + n + 1 >= out_size) break;
+        memcpy(out + used, line, n);
+        used += n;
+    }
+    while (used > 0 && out[used - 1] == ' ') used--;
+    out[used] = '\0';
+    pclose(p);
+    return 0;
+}
+
 /* Sends one response line, always ending with " SID:<sid>\n". */
 static void send_response(conn_t *c, const char *fmt, ...)
 {
@@ -157,6 +192,20 @@ static int handle_command(conn_t *c, char *line)
             send_response(c, "OK PROCS %s", procs);
         else
             send_response(c, "ERR 007 LISTPROC_FAILED");
+        return 1;
+    }
+
+    if (strcmp(cmd, "EXEC") == 0) {
+        const char *shell_cmd = arg ? exec_lookup(arg) : NULL;
+        if (!shell_cmd) {
+            send_response(c, "ERR 002 COMMAND_NOT_ALLOWED");
+            return 1;
+        }
+        char output[LINE_MAX_LEN - 64];
+        if (run_fixed(shell_cmd, output, sizeof(output)) == 0)
+            send_response(c, "OK EXEC_RESULT %s", output);
+        else
+            send_response(c, "ERR 008 EXEC_FAILED");
         return 1;
     }
 
