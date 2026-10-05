@@ -10,3 +10,8 @@
 ## 5 Oct 2026
 - Implemented read_line() with a per-connection buffer. TCP is a byte stream, so one recv() may hold a partial line or several lines; the buffer keeps leftover bytes between calls.
 - Tested with multiple lines in one send and a line split across two sends (2s apart). Both worked.
+
+## 5 Oct 2026
+- Implemented read_line() with a per-connection buffer. TCP is a byte stream, so one recv() may hold a partial line or several lines; the buffer keeps leftover bytes between calls.
+- Tested multiple lines in one send and a line split across two sends (2s apart). Both worked.
+- Verified 6 simultaneous clients (12 ESTAB lines in ss). Model: one detached pthread per connection.

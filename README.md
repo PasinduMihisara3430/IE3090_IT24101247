@@ -14,3 +14,6 @@
 
 ## Build
     make -f Makefile_247
+
+## Concurrency model
+One detached pthread per accepted connection. Each thread owns its own receive buffer (conn_t), so no shared state between clients.
