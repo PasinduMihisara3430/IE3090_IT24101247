@@ -3,12 +3,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
 #define AGENT_PORT   9410          /* 7000 + 2410 */
+#define SID          "7421"        /* 1247 reversed */
+#define AUTH_TOKEN   "OPS-1247"
 #define BACKLOG      10
 #define LINE_MAX_LEN 1024
 
@@ -16,7 +19,22 @@ typedef struct {
     int    fd;
     char   buf[4096];   /* receive buffer */
     size_t len;         /* bytes currently in buf */
+    int    authed;      /* 1 after successful AUTH */
 } conn_t;
+
+/* Sends one response line, always ending with " SID:<sid>\n". */
+static void send_response(conn_t *c, const char *fmt, ...)
+{
+    char msg[LINE_MAX_LEN + 64];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(msg, sizeof(msg) - 32, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if ((size_t)n > sizeof(msg) - 32) n = sizeof(msg) - 32;
+    n += snprintf(msg + n, 32, " SID:%s\n", SID);
+    send(c->fd, msg, n, 0);
+}
 
 /* Reads one line (without '\n') into out. Returns length, or -1 on disconnect/error. */
 static int read_line(conn_t *c, char *out, size_t out_size)
@@ -47,19 +65,49 @@ static int read_line(conn_t *c, char *out, size_t out_size)
     }
 }
 
+/* Handles one command line. Returns 1 to keep going, 0 to close connection. */
+static int handle_command(conn_t *c, char *line)
+{
+    char *cmd = strtok(line, " ");
+    if (!cmd) return 1;                       /* empty line: ignore */
+    char *arg = strtok(NULL, "");             /* rest of line */
+
+    if (strcmp(cmd, "AUTH") == 0) {
+        if (arg && strcmp(arg, AUTH_TOKEN) == 0) {
+            c->authed = 1;
+            send_response(c, "OK AUTHENTICATED");
+        } else {
+            send_response(c, "ERR 001 AUTH_FAILED");
+        }
+        return 1;
+    }
+
+    if (!c->authed) {
+        send_response(c, "ERR 003 NOT_AUTHENTICATED");
+        return 1;
+    }
+
+    if (strcmp(cmd, "QUIT") == 0) {
+        send_response(c, "OK BYE");
+        return 0;
+    }
+
+    send_response(c, "ERR 006 UNKNOWN_COMMAND");
+    return 1;
+}
+
 static void *client_thread(void *arg)
 {
     conn_t c;
-    c.fd  = *(int *)arg;
-    c.len = 0;
+    c.fd     = *(int *)arg;
+    c.len    = 0;
+    c.authed = 0;
     free(arg);
 
     char line[LINE_MAX_LEN];
     while (read_line(&c, line, sizeof(line)) >= 0) {
         printf("Got line: [%s]\n", line);
-        char reply[LINE_MAX_LEN + 16];
-        snprintf(reply, sizeof(reply), "ECHO %s\n", line);
-        send(c.fd, reply, strlen(reply), 0);
+        if (!handle_command(&c, line)) break;
     }
     close(c.fd);
     return NULL;
