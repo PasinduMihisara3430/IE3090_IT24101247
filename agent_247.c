@@ -22,6 +22,37 @@ typedef struct {
     int    authed;      /* 1 after successful AUTH */
 } conn_t;
 
+
+/* ---------- System information helpers ---------- */
+
+/* Reads CPU load (1-min loadavg), used memory in MB, and uptime in seconds. */
+static void get_sysinfo(double *cpu, long *mem_used_mb, long *uptime)
+{
+    *cpu = 0.0; *mem_used_mb = 0; *uptime = 0;
+
+    FILE *f = fopen("/proc/loadavg", "r");
+    if (f) { if (fscanf(f, "%lf", cpu) != 1) *cpu = 0.0; fclose(f); }
+
+    f = fopen("/proc/uptime", "r");
+    if (f) {
+        double up;
+        if (fscanf(f, "%lf", &up) == 1) *uptime = (long)up;
+        fclose(f);
+    }
+
+    f = fopen("/proc/meminfo", "r");
+    if (f) {
+        char key[64]; long val; char unit[16];
+        long total = 0, avail = 0;
+        while (fscanf(f, "%63s %ld %15s", key, &val, unit) >= 2) {
+            if (strcmp(key, "MemTotal:") == 0) total = val;
+            else if (strcmp(key, "MemAvailable:") == 0) { avail = val; break; }
+        }
+        fclose(f);
+        *mem_used_mb = (total - avail) / 1024;
+    }
+}
+
 /* Sends one response line, always ending with " SID:<sid>\n". */
 static void send_response(conn_t *c, const char *fmt, ...)
 {
@@ -84,6 +115,13 @@ static int handle_command(conn_t *c, char *line)
 
     if (!c->authed) {
         send_response(c, "ERR 003 NOT_AUTHENTICATED");
+        return 1;
+    }
+
+    if (strcmp(cmd, "SYSINFO") == 0) {
+        double cpu; long mem, up;
+        get_sysinfo(&cpu, &mem, &up);
+        send_response(c, "OK SYSINFO %.2f %ld %ld", cpu, mem, up);
         return 1;
     }
 
