@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -14,6 +16,8 @@
 #define AUTH_TOKEN   "OPS-1247"
 #define BACKLOG      10
 #define LINE_MAX_LEN 1024
+#define STORAGE_DIR  "./agentfiles/IT24101247"
+#define MAX_FILE_SIZE (10L * 1024 * 1024)
 
 typedef struct {
     int    fd;
@@ -157,6 +161,56 @@ static int read_line(conn_t *c, char *out, size_t out_size)
     }
 }
 
+/* ---------- File transfer helpers ---------- */
+
+/* Only letters, digits, '.', '_', '-' allowed; no leading '.', so no "../" tricks. */
+static int valid_filename(const char *n)
+{
+    size_t len = strlen(n);
+    if (len == 0 || len > 100 || n[0] == '.') return 0;
+    for (; *n; n++) {
+        unsigned char ch = (unsigned char)*n;
+        if (!(isalnum(ch) || ch == '.' || ch == '_' || ch == '-')) return 0;
+    }
+    return 1;
+}
+
+/* Sends all len bytes, looping because send() may send only part. */
+static int send_all(int fd, const char *buf, size_t len)
+{
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) return -1;
+        sent += n;
+    }
+    return 0;
+}
+
+/* Reads exactly `size` bytes (leftover buffer first, then recv) into fp.
+ * Returns 0 on success, -1 if the client disconnects early. */
+static int receive_to_file(conn_t *c, FILE *fp, long size)
+{
+    long remaining = size;
+    while (remaining > 0) {
+        if (c->len > 0) {
+            size_t take = c->len < (size_t)remaining ? c->len : (size_t)remaining;
+            fwrite(c->buf, 1, take, fp);
+            memmove(c->buf, c->buf + take, c->len - take);
+            c->len -= take;
+            remaining -= (long)take;
+        } else {
+            char tmp[4096];
+            size_t want = remaining < (long)sizeof(tmp) ? (size_t)remaining : sizeof(tmp);
+            ssize_t n = recv(c->fd, tmp, want, 0);
+            if (n <= 0) return -1;
+            fwrite(tmp, 1, n, fp);
+            remaining -= n;
+        }
+    }
+    return 0;
+}
+
 /* Handles one command line. Returns 1 to keep going, 0 to close connection. */
 static int handle_command(conn_t *c, char *line)
 {
@@ -209,6 +263,54 @@ static int handle_command(conn_t *c, char *line)
         return 1;
     }
 
+    if (strcmp(cmd, "PUT") == 0) {
+        char name[128]; long size;
+        if (!arg || sscanf(arg, "%127s %ld", name, &size) != 2 ||
+            size < 0 || !valid_filename(name)) {
+            send_response(c, "ERR 009 BAD_REQUEST");
+            return 0;                 /* unknown bytes may follow: close */
+        }
+        if (size > MAX_FILE_SIZE) {
+            send_response(c, "ERR 004 FILE_TOO_LARGE");
+            return 0;
+        }
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s", STORAGE_DIR, name);
+        FILE *fp = fopen(path, "wb");
+        if (!fp) { send_response(c, "ERR 010 STORE_FAILED"); return 0; }
+        int rc = receive_to_file(c, fp, size);
+        fclose(fp);
+        if (rc < 0) { unlink(path); return 0; }   /* client dropped mid-upload */
+        send_response(c, "OK FILE_RECEIVED %s", name);
+        return 1;
+    }
+
+    if (strcmp(cmd, "GET") == 0) {
+        if (!arg || !valid_filename(arg)) {
+            send_response(c, "ERR 005 FILE_NOT_FOUND");
+            return 1;
+        }
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s", STORAGE_DIR, arg);
+        FILE *fp = fopen(path, "rb");
+        if (!fp) { send_response(c, "ERR 005 FILE_NOT_FOUND"); return 1; }
+        fseek(fp, 0, SEEK_END);
+        long size = ftell(fp);
+        rewind(fp);
+        send_response(c, "OK FILE_SEND %s %ld", arg, size);
+        char tmp[4096];
+        long remaining = size;
+        while (remaining > 0) {
+            size_t want = remaining < (long)sizeof(tmp) ? (size_t)remaining : sizeof(tmp);
+            size_t n = fread(tmp, 1, want, fp);
+            if (n == 0) break;
+            if (send_all(c->fd, tmp, n) < 0) { fclose(fp); return 0; }
+            remaining -= (long)n;
+        }
+        fclose(fp);
+        return 1;
+    }
+
     if (strcmp(cmd, "QUIT") == 0) {
         send_response(c, "OK BYE");
         return 0;
@@ -238,6 +340,8 @@ static void *client_thread(void *arg)
 int main(void)
 {
     signal(SIGPIPE, SIG_IGN);
+    mkdir("./agentfiles", 0755);
+    mkdir(STORAGE_DIR, 0755);
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) { perror("socket"); exit(1); }
