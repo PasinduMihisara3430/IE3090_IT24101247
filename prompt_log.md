@@ -11,3 +11,4 @@
 | 6 | 5 Oct 2026 | Claude | Asked how to test 5+ simultaneous clients | Used nc loop + ss to prove 6 ESTAB connections |
 | 7 | 5 Oct 2026 | Claude | Asked for AUTH + SID-tagged responses | Tested with nc, checked every reply ends with SID:7421 |
 | 8 | 5 Oct 2026 | Claude | Asked for SYSINFO, LISTPROC, EXEC | LISTPROC filter was wrong (empty output), fixed with awk; tested injection attempts on EXEC |
+| 9 | 6 Oct 2026 | Claude | Asked for PUT/GET with exact byte counting | Tested with nc + random 100 KB file; verified with cmp/md5sum |

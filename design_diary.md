@@ -19,3 +19,8 @@
 - Added SYSINFO (/proc/loadavg, /proc/meminfo, /proc/uptime), LISTPROC (ps, kernel threads filtered with awk) and EXEC.
 - Obstacle: first LISTPROC attempt returned an empty list because of a wrong ps filter; fixed with an awk filter.
 - EXEC uses a fixed whitelist lookup (exec_lookup): user input never reaches the shell, so "DATE; rm -rf /" is rejected.
+
+## 6 Oct 2026
+- Added PUT/GET. PUT reads <filesize> bytes, using bytes already in the line buffer first, then recv(). GET sends the header line then the file with a send_all() loop.
+- Filenames validated (letters, digits, . _ - only, no leading dot) to block path traversal. Max upload 10 MB (ERR 004).
+- Verified a 100000-byte random file with cmp and md5sum: identical.
