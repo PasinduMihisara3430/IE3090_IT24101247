@@ -24,3 +24,9 @@
 - Added PUT/GET. PUT reads <filesize> bytes, using bytes already in the line buffer first, then recv(). GET sends the header line then the file with a send_all() loop.
 - Filenames validated (letters, digits, . _ - only, no leading dot) to block path traversal. Max upload 10 MB (ERR 004).
 - Verified a 100000-byte random file with cmp and md5sum: identical.
+
+## 7 Oct 2026
+- Rewrote controller as an interactive client; verified GET byte-exact with cmp/md5sum.
+- Obstacle: VM network adapter had no carrier, so git push failed; fixed in VMware settings, then pushed. Commits stayed local meanwhile.
+- Added UDP monitoring: a monitor thread per session sends SYSINFO datagrams every 3 s; stopped by MONITOR STOP, QUIT or disconnect.
+- Added mutex-protected logging with timestamps (AUTH token is masked).

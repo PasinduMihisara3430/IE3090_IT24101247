@@ -17,3 +17,11 @@
 
 ## Concurrency model
 One detached pthread per accepted connection. Each thread owns its own receive buffer (conn_t), so no shared state between clients.
+
+## Features
+AUTH, SYSINFO, LISTPROC, EXEC (whitelist), PUT, GET, MONITOR START/STOP (UDP, every 3 s), QUIT, timestamped logging to remoteops_IT24101247.log.
+
+## Run
+    make -f Makefile_247
+    ./agent_247
+    ./controller_247 [agent-ip]
