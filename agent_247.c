@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <ctype.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -16,6 +17,7 @@
 #define AUTH_TOKEN   "OPS-1247"
 #define BACKLOG      10
 #define LINE_MAX_LEN 1024
+#define LOG_FILE     "remoteops_IT24101247.log"
 #define STORAGE_DIR  "./agentfiles/IT24101247"
 #define MAX_FILE_SIZE (10L * 1024 * 1024)
 
@@ -120,6 +122,29 @@ static int run_fixed(const char *cmd, char *out, size_t out_size)
     out[used] = '\0';
     pclose(p);
     return 0;
+}
+
+/* ---------- Logging ---------- */
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void log_event(const char *fmt, ...)
+{
+    char msg[1200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+
+    time_t now = time(NULL);
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tmv);
+
+    pthread_mutex_lock(&log_mutex);
+    FILE *f = fopen(LOG_FILE, "a");
+    if (f) { fprintf(f, "[%s] %s\n", ts, msg); fclose(f); }
+    pthread_mutex_unlock(&log_mutex);
 }
 
 /* Sends one response line, always ending with " SID:<sid>\n". */
@@ -252,6 +277,14 @@ static void monitor_stop(conn_t *c)
 /* Handles one command line. Returns 1 to keep going, 0 to close connection. */
 static int handle_command(conn_t *c, char *line)
 {
+    {
+        char shown[LINE_MAX_LEN];
+        strncpy(shown, line, sizeof(shown) - 1);
+        shown[sizeof(shown) - 1] = '\0';
+        if (strncmp(shown, "AUTH ", 5) == 0) strcpy(shown, "AUTH ****");
+        log_event("%s:%d COMMAND %s", inet_ntoa(c->peer.sin_addr),
+                  ntohs(c->peer.sin_port), shown);
+    }
     char *cmd = strtok(line, " ");
     if (!cmd) return 1;                       /* empty line: ignore */
     char *arg = strtok(NULL, "");             /* rest of line */
@@ -259,8 +292,10 @@ static int handle_command(conn_t *c, char *line)
     if (strcmp(cmd, "AUTH") == 0) {
         if (arg && strcmp(arg, AUTH_TOKEN) == 0) {
             c->authed = 1;
+            log_event("%s:%d AUTH_OK", inet_ntoa(c->peer.sin_addr), ntohs(c->peer.sin_port));
             send_response(c, "OK AUTHENTICATED");
         } else {
+            log_event("%s:%d AUTH_FAILED", inet_ntoa(c->peer.sin_addr), ntohs(c->peer.sin_port));
             send_response(c, "ERR 001 AUTH_FAILED");
         }
         return 1;
@@ -319,6 +354,7 @@ static int handle_command(conn_t *c, char *line)
         int rc = receive_to_file(c, fp, size);
         fclose(fp);
         if (rc < 0) { unlink(path); return 0; }   /* client dropped mid-upload */
+        log_event("FILE_TRANSFER PUT %s %ld bytes stored", name, size);
         send_response(c, "OK FILE_RECEIVED %s", name);
         return 1;
     }
@@ -335,6 +371,7 @@ static int handle_command(conn_t *c, char *line)
         fseek(fp, 0, SEEK_END);
         long size = ftell(fp);
         rewind(fp);
+        log_event("FILE_TRANSFER GET %s %ld bytes sent", arg, size);
         send_response(c, "OK FILE_SEND %s %ld", arg, size);
         char tmp[4096];
         long remaining = size;
@@ -394,6 +431,7 @@ static void *client_thread(void *arg)
     c.fd   = ai->fd;
     c.peer = ai->peer;
     free(ai);
+    log_event("%s:%d CONNECTED", inet_ntoa(c.peer.sin_addr), ntohs(c.peer.sin_port));
 
     char line[LINE_MAX_LEN];
     while (read_line(&c, line, sizeof(line)) >= 0) {
@@ -401,6 +439,7 @@ static void *client_thread(void *arg)
         if (!handle_command(&c, line)) break;
     }
     monitor_stop(&c);                /* also covers ungraceful disconnects */
+    log_event("%s:%d DISCONNECTED", inet_ntoa(c.peer.sin_addr), ntohs(c.peer.sin_port));
     close(c.fd);
     return NULL;
 }
