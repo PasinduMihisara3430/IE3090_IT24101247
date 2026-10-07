@@ -24,6 +24,10 @@ typedef struct {
     char   buf[4096];   /* receive buffer */
     size_t len;         /* bytes currently in buf */
     int    authed;      /* 1 after successful AUTH */
+    struct sockaddr_in peer;   /* controller address, used for UDP */
+    pthread_t mon_tid;
+    volatile int mon_running;  /* 1 while monitor thread is active */
+    int    mon_port;
 } conn_t;
 
 
@@ -211,6 +215,40 @@ static int receive_to_file(conn_t *c, FILE *fp, long size)
     return 0;
 }
 
+/* ---------- UDP monitoring ---------- */
+#define MONITOR_INTERVAL_SEC 3
+
+static void *monitor_thread(void *arg)
+{
+    conn_t *c = (conn_t *)arg;
+    int us = socket(AF_INET, SOCK_DGRAM, 0);
+    if (us < 0) { c->mon_running = 0; return NULL; }
+
+    struct sockaddr_in dst = c->peer;
+    dst.sin_port = htons(c->mon_port);
+
+    while (c->mon_running) {
+        double cpu; long mem, up;
+        get_sysinfo(&cpu, &mem, &up);
+        char msg[128];
+        int n = snprintf(msg, sizeof(msg), "SYSINFO %.2f %ld %ld SID:%s\n",
+                         cpu, mem, up, SID);
+        sendto(us, msg, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+        for (int i = 0; i < MONITOR_INTERVAL_SEC * 10 && c->mon_running; i++)
+            usleep(100000);          /* 0.1s steps so STOP reacts quickly */
+    }
+    close(us);
+    return NULL;
+}
+
+static void monitor_stop(conn_t *c)
+{
+    if (c->mon_running) {
+        c->mon_running = 0;
+        pthread_join(c->mon_tid, NULL);
+    }
+}
+
 /* Handles one command line. Returns 1 to keep going, 0 to close connection. */
 static int handle_command(conn_t *c, char *line)
 {
@@ -311,7 +349,30 @@ static int handle_command(conn_t *c, char *line)
         return 1;
     }
 
+    if (strcmp(cmd, "MONITOR") == 0) {
+        char sub[16] = ""; int port = 0;
+        int cnt = arg ? sscanf(arg, "%15s %d", sub, &port) : 0;
+        if (cnt == 2 && strcmp(sub, "START") == 0 && port > 0 && port < 65536) {
+            monitor_stop(c);                 /* restart cleanly if already on */
+            c->mon_port = port;
+            c->mon_running = 1;
+            if (pthread_create(&c->mon_tid, NULL, monitor_thread, c) != 0) {
+                c->mon_running = 0;
+                send_response(c, "ERR 011 MONITOR_FAILED");
+            } else {
+                send_response(c, "OK MONITOR_STARTED");
+            }
+        } else if (cnt >= 1 && strcmp(sub, "STOP") == 0) {
+            monitor_stop(c);
+            send_response(c, "OK MONITOR_STOPPED");
+        } else {
+            send_response(c, "ERR 009 BAD_REQUEST");
+        }
+        return 1;
+    }
+
     if (strcmp(cmd, "QUIT") == 0) {
+        monitor_stop(c);
         send_response(c, "OK BYE");
         return 0;
     }
@@ -320,19 +381,26 @@ static int handle_command(conn_t *c, char *line)
     return 1;
 }
 
+typedef struct {
+    int fd;
+    struct sockaddr_in peer;
+} accept_info_t;
+
 static void *client_thread(void *arg)
 {
+    accept_info_t *ai = (accept_info_t *)arg;
     conn_t c;
-    c.fd     = *(int *)arg;
-    c.len    = 0;
-    c.authed = 0;
-    free(arg);
+    memset(&c, 0, sizeof(c));
+    c.fd   = ai->fd;
+    c.peer = ai->peer;
+    free(ai);
 
     char line[LINE_MAX_LEN];
     while (read_line(&c, line, sizeof(line)) >= 0) {
         printf("Got line: [%s]\n", line);
         if (!handle_command(&c, line)) break;
     }
+    monitor_stop(&c);                /* also covers ungraceful disconnects */
     close(c.fd);
     return NULL;
 }
@@ -365,15 +433,15 @@ int main(void)
     while (1) {
         struct sockaddr_in cli;
         socklen_t len = sizeof(cli);
-        int *cfd = malloc(sizeof(int));
-        *cfd = accept(listen_fd, (struct sockaddr *)&cli, &len);
-        if (*cfd < 0) { perror("accept"); free(cfd); continue; }
-
+        accept_info_t *ai = malloc(sizeof(*ai));
+        ai->fd = accept(listen_fd, (struct sockaddr *)&cli, &len);
+        if (ai->fd < 0) { perror("accept"); free(ai); continue; }
+        ai->peer = cli;
         printf("Connection from %s:%d\n",
                inet_ntoa(cli.sin_addr), ntohs(cli.sin_port));
 
         pthread_t tid;
-        pthread_create(&tid, NULL, client_thread, cfd);
+        pthread_create(&tid, NULL, client_thread, ai);
         pthread_detach(tid);
     }
 }

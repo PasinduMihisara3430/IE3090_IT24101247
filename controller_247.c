@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -113,6 +114,56 @@ static void do_get(const char *name)
     printf("Saved %s (%ld bytes)\n", out, size - remaining);
 }
 
+
+/* ---------- UDP monitor receiver ---------- */
+static volatile int udp_running = 0;
+static int udp_fd = -1;
+static pthread_t udp_tid;
+
+static void *udp_thread(void *arg)
+{
+    (void)arg;
+    char buf[256];
+    while (udp_running) {
+        ssize_t n = recvfrom(udp_fd, buf, sizeof(buf) - 1, 0, NULL, NULL);
+        if (n <= 0) continue;
+        buf[n] = '\0';
+        buf[strcspn(buf, "\r\n")] = '\0';
+        printf("\n[UDP] %s\n> ", buf);
+        fflush(stdout);
+    }
+    return NULL;
+}
+
+static int udp_start(int port)
+{
+    if (udp_running) return 0;
+    udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_fd < 0) return -1;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    a.sin_port = htons(port);
+    if (bind(udp_fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
+        perror("udp bind"); close(udp_fd); udp_fd = -1; return -1;
+    }
+    struct timeval tv = {1, 0};          /* wake up every 1s to check udp_running */
+    setsockopt(udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    udp_running = 1;
+    pthread_create(&udp_tid, NULL, udp_thread, NULL);
+    return 0;
+}
+
+static void udp_stop(void)
+{
+    if (!udp_running) return;
+    udp_running = 0;
+    pthread_join(udp_tid, NULL);
+    close(udp_fd);
+    udp_fd = -1;
+}
+
 int main(int argc, char *argv[])
 {
     const char *ip = (argc > 1) ? argv[1] : "127.0.0.1";
@@ -143,12 +194,18 @@ int main(int argc, char *argv[])
         if (strncmp(input, "PUT ", 4) == 0) { do_put(input + 4); continue; }
         if (strncmp(input, "GET ", 4) == 0) { do_get(input + 4); continue; }
 
+        if (strncmp(input, "MONITOR START ", 14) == 0) {
+            int p = atoi(input + 14);
+            if (p > 0 && udp_start(p) < 0) { printf("Cannot open UDP port %d\n", p); continue; }
+        }
         strcat(input, "\n");
         if (send_all(input, strlen(input)) < 0) { printf("Send failed\n"); break; }
         if (read_line(line, sizeof(line)) < 0) { printf("Server closed connection\n"); break; }
         printf("%s\n", line);
+        if (strncmp(input, "MONITOR STOP", 12) == 0) udp_stop();
         if (strncmp(input, "QUIT", 4) == 0) break;
     }
+    udp_stop();
     close(sock_fd);
     return 0;
 }
